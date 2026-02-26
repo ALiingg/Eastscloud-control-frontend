@@ -1,14 +1,132 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
+import { setupAuth, requireAuth, regenerateSession, checkRateLimit, recordFailedAttempt, clearFailedAttempts } from "./auth";
 import { api } from "@shared/routes";
+import { loginSchema, registerSchema } from "@shared/schema";
 import { z } from "zod";
+import bcrypt from "bcrypt";
+
+const SALT_ROUNDS = 12;
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  
+
+  setupAuth(app);
+
+  // === Auth Routes (public) ===
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const rateCheck = checkRateLimit(ip);
+      if (!rateCheck.allowed) {
+        return res.status(429).json({
+          message: `Too many attempts. Try again in ${rateCheck.retryAfter} seconds.`
+        });
+      }
+
+      const { username, password } = registerSchema.parse(req.body);
+
+      const userCount = await storage.getUserCount();
+      if (userCount > 0) {
+        return res.status(403).json({ message: "Registration is closed. Only one admin account is allowed." });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+
+      try {
+        const user = await storage.createUser({ username, password: hashedPassword });
+
+        req.session.userId = user.id;
+        req.session.username = user.username;
+        await regenerateSession(req);
+
+        clearFailedAttempts(ip);
+        res.status(201).json({ id: user.id, username: user.username });
+      } catch (dbErr: any) {
+        if (dbErr.code === "23505") {
+          return res.status(409).json({ message: "Username already exists" });
+        }
+        throw dbErr;
+      }
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message });
+      }
+      console.error("Register error:", err);
+      res.status(500).json({ message: "Internal Error" });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const ip = req.ip || req.socket.remoteAddress || "unknown";
+      const rateCheck = checkRateLimit(ip);
+      if (!rateCheck.allowed) {
+        return res.status(429).json({
+          message: `Too many attempts. Try again in ${rateCheck.retryAfter} seconds.`
+        });
+      }
+
+      const { username, password } = loginSchema.parse(req.body);
+
+      const user = await storage.getUserByUsername(username);
+      if (!user) {
+        recordFailedAttempt(ip);
+        return res.status(401).json({ message: "Invalid username or password" });
+      }
+
+      const valid = await bcrypt.compare(password, user.password);
+      if (!valid) {
+        recordFailedAttempt(ip);
+        return res.status(401).json({ message: "Invalid username or password" });
+      }
+
+      req.session.userId = user.id;
+      req.session.username = user.username;
+      await regenerateSession(req);
+
+      clearFailedAttempts(ip);
+      res.json({ id: user.id, username: user.username });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ message: err.errors[0].message });
+      }
+      console.error("Login error:", err);
+      res.status(500).json({ message: "Internal Error" });
+    }
+  });
+
+  app.post("/api/auth/logout", (req, res) => {
+    req.session.destroy((err) => {
+      if (err) {
+        return res.status(500).json({ message: "Logout failed" });
+      }
+      res.clearCookie("pmcenter.sid");
+      res.json({ message: "Logged out" });
+    });
+  });
+
+  app.get("/api/auth/me", (req, res) => {
+    if (req.session && req.session.userId) {
+      return res.json({ id: req.session.userId, username: req.session.username });
+    }
+    return res.status(401).json({ message: "Not authenticated" });
+  });
+
+  app.get("/api/auth/status", async (_req, res) => {
+    const count = await storage.getUserCount();
+    res.json({ hasAdmin: count > 0 });
+  });
+
+  // === Protect all /api routes below with auth ===
+  app.use("/api/services", requireAuth);
+  app.use("/api/documents", requireAuth);
+  app.use("/api/otp-secrets", requireAuth);
+
+  // === Seed ===
   async function seedDatabase() {
     try {
       const existingServices = await storage.getServices();
@@ -46,14 +164,13 @@ export async function registerRoutes(
         await storage.createOtpSecret({
           issuer: "GitHub",
           account: "user@example.com",
-          secret: "JBSWY3DPEHPK3PXP", 
+          secret: "JBSWY3DPEHPK3PXP",
         });
       }
     } catch (e) {
       console.error("Seeding failed", e);
     }
   }
-  
   seedDatabase();
 
   // Services
@@ -61,7 +178,7 @@ export async function registerRoutes(
     const services = await storage.getServices();
     res.json(services);
   });
-  
+
   app.get(api.services.get.path, async (req, res) => {
     const service = await storage.getService(Number(req.params.id));
     if (!service) return res.status(404).json({ message: "Not found" });
@@ -108,7 +225,7 @@ export async function registerRoutes(
     const docs = await storage.getDocuments();
     res.json(docs);
   });
-  
+
   app.get(api.documents.get.path, async (req, res) => {
     const doc = await storage.getDocument(Number(req.params.id));
     if (!doc) return res.status(404).json({ message: "Not found" });
@@ -155,7 +272,7 @@ export async function registerRoutes(
     const secrets = await storage.getOtpSecrets();
     res.json(secrets);
   });
-  
+
   app.get(api.otpSecrets.get.path, async (req, res) => {
     const secret = await storage.getOtpSecret(Number(req.params.id));
     if (!secret) return res.status(404).json({ message: "Not found" });

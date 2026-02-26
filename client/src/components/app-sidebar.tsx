@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Server, FileText, KeyRound, Box } from "lucide-react";
+import { LayoutDashboard, Server, FileText, KeyRound, Box, LogOut } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -10,7 +10,10 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarHeader,
+  SidebarFooter,
 } from "@/components/ui/sidebar";
+import { useAuth } from "@/hooks/use-auth";
+import { Button } from "@/components/ui/button";
 
 const navItems = [
   { title: "Overview", url: "/", icon: LayoutDashboard },
@@ -21,6 +24,7 @@ const navItems = [
 
 export function AppSidebar() {
   const [location] = useLocation();
+  const { user, logout } = useAuth();
 
   return (
     <Sidebar className="border-r border-border/50 bg-sidebar/30 backdrop-blur-xl">
@@ -69,6 +73,22 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+      <SidebarFooter className="p-4 border-t border-border/50">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground truncate" data-testid="text-current-user">
+            {user?.username}
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            data-testid="button-logout"
+            onClick={() => logout.mutate()}
+            disabled={logout.isPending}
+          >
+            <LogOut className="w-4 h-4" />
+          </Button>
+        </div>
+      </SidebarFooter>
     </Sidebar>
   );
 }

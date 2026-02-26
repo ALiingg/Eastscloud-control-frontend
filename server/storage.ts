@@ -1,6 +1,7 @@
 import { db } from "./db";
 import {
-  services, documents, otpSecrets,
+  users, services, documents, otpSecrets,
+  type User, type InsertUser,
   type Service, type InsertService,
   type Document, type InsertDocument,
   type OtpSecret, type InsertOtpSecret,
@@ -9,6 +10,12 @@ import {
 import { eq } from "drizzle-orm";
 
 export interface IStorage {
+  // Users
+  getUserById(id: number): Promise<User | undefined>;
+  getUserByUsername(username: string): Promise<User | undefined>;
+  createUser(user: InsertUser): Promise<User>;
+  getUserCount(): Promise<number>;
+
   // Services
   getServices(): Promise<Service[]>;
   getService(id: number): Promise<Service | undefined>;
@@ -32,6 +39,24 @@ export interface IStorage {
 }
 
 export class DatabaseStorage implements IStorage {
+  // Users
+  async getUserById(id: number): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user;
+  }
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.username, username));
+    return user;
+  }
+  async createUser(user: InsertUser): Promise<User> {
+    const [created] = await db.insert(users).values(user).returning();
+    return created;
+  }
+  async getUserCount(): Promise<number> {
+    const result = await db.select().from(users);
+    return result.length;
+  }
+
   // Services
   async getServices(): Promise<Service[]> {
     return await db.select().from(services);
