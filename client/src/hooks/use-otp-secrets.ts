@@ -11,6 +11,7 @@ export function useOtpSecrets() {
       if (!res.ok) throw new Error("Failed to fetch OTP secrets");
       return api.otpSecrets.list.responses[200].parse(await res.json());
     },
+    refetchInterval: 5000,
   });
 }
 

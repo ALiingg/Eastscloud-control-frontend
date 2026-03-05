@@ -4,11 +4,41 @@ import { useOtpSecrets } from "@/hooks/use-otp-secrets";
 import { Server, FileText, KeyRound, ArrowRight } from "lucide-react";
 import { Link } from "wouter";
 import { format } from "date-fns";
+import { useQuery } from "@tanstack/react-query";
 
 export default function Overview() {
   const { data: services } = useServices();
   const { data: documents } = useDocuments();
   const { data: otpSecrets } = useOtpSecrets();
+  const { data: usage } = useQuery<{
+    contextUsedK: number | null;
+    contextTotalK: number | null;
+    contextPercent: number | null;
+    cachePercent: number | null;
+    weekLeftPercent: number | null;
+    raw: string;
+  }>({
+    queryKey: ["/api/openclaw/usage"],
+    queryFn: async () => {
+      const res = await fetch("/api/openclaw/usage", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load usage");
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
+  const { data: serverStatus } = useQuery<{
+    updatedAt: string;
+    servers: Array<{ name: string; host: string; port: number; os: string; online: boolean }>;
+  }>({
+    queryKey: ["/api/server-status"],
+    queryFn: async () => {
+      const res = await fetch("/api/server-status", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to load server status");
+      return res.json();
+    },
+    refetchInterval: 10000,
+  });
 
   const metrics = [
     { label: "Active Services", value: services?.length || 0, icon: Server, url: "/services", color: "text-blue-500" },
@@ -24,6 +54,53 @@ export default function Overview() {
         <h1 className="text-4xl font-bold tracking-tight text-foreground">Overview</h1>
         <p className="text-muted-foreground mt-2 text-lg">Your personal management center at a glance.</p>
       </header>
+
+      <section className="bg-card rounded-2xl p-6 border border-border/40 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold">OpenClaw Usage</h2>
+          <span className="text-xs text-muted-foreground">auto refresh: 30s</span>
+        </div>
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="rounded-xl border border-border/40 p-4">
+            <div className="text-xs text-muted-foreground">Context</div>
+            <div className="text-2xl font-bold mt-1">
+              {usage?.contextUsedK ?? "-"}k / {usage?.contextTotalK ?? "-"}k
+            </div>
+          </div>
+          <div className="rounded-xl border border-border/40 p-4">
+            <div className="text-xs text-muted-foreground">Usage %</div>
+            <div className="text-2xl font-bold mt-1">{usage?.contextPercent ?? "-"}%</div>
+          </div>
+          <div className="rounded-xl border border-border/40 p-4">
+            <div className="text-xs text-muted-foreground">Cache hit</div>
+            <div className="text-2xl font-bold mt-1">{usage?.cachePercent ?? "-"}%</div>
+          </div>
+          <div className="rounded-xl border border-border/40 p-4">
+            <div className="text-xs text-muted-foreground">Week left</div>
+            <div className="text-2xl font-bold mt-1">{usage?.weekLeftPercent ?? "-"}%</div>
+          </div>
+        </div>
+      </section>
+
+      <section className="bg-card rounded-2xl p-6 border border-border/40 shadow-sm">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold">Server Status</h2>
+          <span className="text-xs text-muted-foreground">auto refresh: 10s</span>
+        </div>
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+          {serverStatus?.servers?.map((s) => (
+            <div key={s.name} className="rounded-xl border border-border/40 p-4 flex items-center justify-between">
+              <div>
+                <div className="text-sm font-semibold">{s.name}</div>
+                <div className="text-xs text-muted-foreground">{s.host}:{s.port}</div>
+              </div>
+              <span className={`text-xs px-2 py-1 rounded-full ${s.online ? "bg-emerald-500/15 text-emerald-600" : "bg-rose-500/15 text-rose-600"}`}>
+                {s.online ? "Online" : "Offline"}
+              </span>
+            </div>
+          )) || <div className="text-sm text-muted-foreground">No server status data.</div>}
+        </div>
+      </section>
 
       <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {metrics.map((metric) => (

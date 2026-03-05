@@ -6,6 +6,10 @@ import { api } from "@shared/routes";
 import { loginSchema, registerSchema } from "@shared/schema";
 import { z } from "zod";
 import bcrypt from "bcrypt";
+import { exec as execCb } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(execCb);
 
 const SALT_ROUNDS = 12;
 
@@ -121,10 +125,61 @@ export async function registerRoutes(
     res.json({ hasAdmin: count > 0 });
   });
 
+  app.get("/api/openclaw/usage", async (_req, res) => {
+    try {
+      const { stdout } = await execAsync("openclaw status");
+      const cleaned = stdout.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
+
+      // Prefer direct-chat session line; fallback to first token usage line.
+      const lines = cleaned.split("\n").map((l) => l.trim()).filter(Boolean);
+      const preferred = lines.find((l) => l.includes("agent:main:dingtalk:direct"))
+        || lines.find((l) => l.includes("agent:main:main"))
+        || lines.find((l) => /\d+k\/\d+k\s*\(\d+%\)/i.test(l))
+        || "";
+
+      const usageMatch = preferred.match(/(\d+)k\/(\d+)k\s*\((\d+)%\)/i)
+        || cleaned.match(/(\d+)k\/(\d+)k\s*\((\d+)%\)/i);
+      const cacheMatch = preferred.match(/(\d+)%\s*cached/i)
+        || cleaned.match(/(\d+)%\s*cached/i);
+      const weekLeftMatch = cleaned.match(/Week\s+(\d+)%\s+left/i);
+
+      res.json({
+        contextUsedK: usageMatch ? Number(usageMatch[1]) : null,
+        contextTotalK: usageMatch ? Number(usageMatch[2]) : null,
+        contextPercent: usageMatch ? Number(usageMatch[3]) : null,
+        cachePercent: cacheMatch ? Number(cacheMatch[1]) : null,
+        weekLeftPercent: weekLeftMatch ? Number(weekLeftMatch[1]) : null,
+        raw: preferred,
+      });
+    } catch (e: any) {
+      res.status(500).json({ message: "Failed to read OpenClaw usage", detail: String(e?.message || e) });
+    }
+  });
+
+  app.get("/api/server-status", async (_req, res) => {
+    const targets = [
+      { name: "Linux (ubuntu-main)", host: "127.0.0.1", port: 22, os: "linux" },
+      { name: "Windows (ROGStrix)", host: "eastscloud.synology.me", port: 33333, os: "windows" },
+    ];
+
+    const checks = await Promise.all(targets.map(async (t) => {
+      try {
+        await execAsync(`timeout 2 bash -lc 'cat < /dev/null > /dev/tcp/${t.host}/${t.port}'`);
+        return { ...t, online: true };
+      } catch {
+        return { ...t, online: false };
+      }
+    }));
+
+    res.json({ updatedAt: new Date().toISOString(), servers: checks });
+  });
+
   // === Protect all /api routes below with auth ===
   app.use("/api/services", requireAuth);
   app.use("/api/documents", requireAuth);
   app.use("/api/otp-secrets", requireAuth);
+  app.use("/api/openclaw", requireAuth);
+  app.use("/api/server-status", requireAuth);
 
   // === Seed ===
   async function seedDatabase() {
@@ -268,7 +323,32 @@ export async function registerRoutes(
   });
 
   // OTP Secrets
-  app.get(api.otpSecrets.list.path, async (req, res) => {
+  app.get(api.otpSecrets.list.path, async (_req, res) => {
+    const eastsBase = process.env.EASTSCLOUD_BACKEND_URL;
+
+    // If EastsCloud backend is configured, use its OTP runtime logic from MySQL.
+    if (eastsBase) {
+      try {
+        const r = await fetch(`${eastsBase.replace(/\/$/, "")}/api/eastscloud-control/allControlCodes`);
+        if (r.ok) {
+          const json: any = await r.json();
+          const data = json?.data || {};
+          const mapped = Object.entries<any>(data).map(([app, v], idx) => ({
+            id: -(idx + 1),
+            issuer: app,
+            account: `TTL ${v?.ttl ?? "-"}s`,
+            secret: "",
+            runtimeCode: v?.code ?? "------",
+            ttl: v?.ttl ?? 0,
+            source: "eastscloud",
+          }));
+          return res.json(mapped);
+        }
+      } catch (e) {
+        console.warn("EastsCloud OTP proxy failed, fallback to local secrets:", e);
+      }
+    }
+
     const secrets = await storage.getOtpSecrets();
     res.json(secrets);
   });
@@ -290,6 +370,40 @@ export async function registerRoutes(
       } else {
         res.status(500).json({ message: "Internal Error" });
       }
+    }
+  });
+
+  // One-click sync local OTP secrets -> EastsCloud MySQL backend
+  app.post("/api/otp-secrets/sync-eastscloud", async (_req, res) => {
+    const eastsBase = process.env.EASTSCLOUD_BACKEND_URL;
+    if (!eastsBase) return res.status(400).json({ message: "EASTSCLOUD_BACKEND_URL not configured" });
+
+    try {
+      const local = await storage.getOtpSecrets();
+      const payload = local.map((s) => ({
+        account: s.account,
+        accountId: `${s.issuer}:${s.account}`,
+        algorithm: "SHA1",
+        appname: s.issuer,
+        digits: 6,
+        interval: 30,
+        issuer: s.issuer,
+        platform: "central-hub",
+        secret: s.secret,
+        uuid: `central-${s.id}`,
+      }));
+
+      const r = await fetch(`${eastsBase.replace(/\/$/, "")}/api/eastscloud-control/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const txt = await r.text();
+      if (!r.ok) return res.status(500).json({ message: "sync failed", detail: txt });
+      return res.json({ synced: payload.length, result: txt });
+    } catch (e: any) {
+      return res.status(500).json({ message: "sync failed", detail: String(e?.message || e) });
     }
   });
 
