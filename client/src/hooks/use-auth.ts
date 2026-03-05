@@ -30,6 +30,7 @@ export function useAuth() {
       if (!res.ok) throw new Error("Failed to check status");
       return res.json();
     },
+    staleTime: 0,
   });
 
   const loginMutation = useMutation({
