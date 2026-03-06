@@ -130,10 +130,11 @@ export async function registerRoutes(
 
       req.session.userId = user.id;
       req.session.username = user.username;
+      req.session.role = (user as any).role || "normal";
       await regenerateSession(req);
 
       clearFailedAttempts(ip);
-      res.json({ id: user.id, username: user.username });
+      res.json({ id: user.id, username: user.username, role: req.session.role });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
@@ -155,7 +156,7 @@ export async function registerRoutes(
 
   app.get("/api/auth/me", (req, res) => {
     if (req.session && req.session.userId) {
-      return res.json({ id: req.session.userId, username: req.session.username });
+      return res.json({ id: req.session.userId, username: req.session.username, role: req.session.role || "normal" });
     }
     return res.status(401).json({ message: "Not authenticated" });
   });
@@ -165,8 +166,16 @@ export async function registerRoutes(
     res.json({ hasAdmin: count > 0 });
   });
 
+  const OPENCLAW_USAGE_CACHE_MS = 3 * 60 * 1000;
+  let openclawUsageCache: { at: number; payload: any } | null = null;
+
   app.get("/api/openclaw/usage", async (_req, res) => {
     try {
+      const now = Date.now();
+      if (openclawUsageCache && now - openclawUsageCache.at < OPENCLAW_USAGE_CACHE_MS) {
+        return res.json(openclawUsageCache.payload);
+      }
+
       const { stdout: statusJsonRaw } = await execAsync("openclaw gateway call status --json");
       const statusObj = JSON.parse(statusJsonRaw);
       const recent = statusObj?.sessions?.recent || [];
@@ -176,25 +185,48 @@ export async function registerRoutes(
         || null;
 
       let weekUsageTokens = null;
+      let totalUsageTokens = null;
       try {
         const { stdout: costRaw } = await execAsync("openclaw gateway usage-cost --json");
         const costObj = JSON.parse(costRaw);
         const daily = Array.isArray(costObj?.daily) ? costObj.daily : [];
         const last7 = daily.slice(-7);
         weekUsageTokens = last7.reduce((sum: number, d: any) => sum + Number(d?.totalTokens || 0), 0);
+        totalUsageTokens = Number(costObj?.totals?.totalTokens || 0) || null;
       } catch {
         weekUsageTokens = null;
+        totalUsageTokens = null;
       }
 
-      res.json({
+      let weekLeftPercent: number | null = null;
+      try {
+        const { stdout: modelsRaw } = await execAsync("openclaw models");
+        const lines = String(modelsRaw || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+        const usageLines = lines.filter((l) => /usage:/i.test(l));
+        const lastUsageLine = usageLines[usageLines.length - 1] || lines[lines.length - 1] || "";
+
+        // e.g. "- openai-codex usage: 5h 87% left ... · Week 17% left ..."
+        const weekMatch = lastUsageLine.match(/Week\s+(\d+(?:\.\d+)?)%\s+left/i);
+        if (weekMatch) {
+          weekLeftPercent = Number(weekMatch[1]);
+        }
+      } catch {
+        weekLeftPercent = null;
+      }
+
+      const payload = {
         contextUsedK: current?.totalTokens ? Math.round(Number(current.totalTokens) / 1000) : null,
         contextTotalK: current?.contextTokens ? Math.round(Number(current.contextTokens) / 1000) : null,
         contextPercent: typeof current?.percentUsed === "number" ? Number(current.percentUsed) : null,
         cachePercent: current?.totalTokens ? Math.max(0, Math.min(100, Math.round((Number(current.cacheRead || 0) / Number(current.totalTokens)) * 100))) : null,
-        weekLeftPercent: null,
+        weekLeftPercent,
         weekUsageTokens,
+        totalUsageTokens,
         raw: current?.key || "",
-      });
+      };
+
+      openclawUsageCache = { at: now, payload };
+      res.json(payload);
     } catch (e: any) {
       res.status(500).json({ message: "Failed to read OpenClaw usage", detail: String(e?.message || e) });
     }
@@ -225,6 +257,38 @@ export async function registerRoutes(
   app.use("/api/openclaw", requireAuth);
   app.use("/api/server-status", requireAuth);
   app.use("/api/guac", requireAuth);
+
+  // User role management (admin only)
+  app.get("/api/users", async (req, res) => {
+    if ((req.session as any).role === "otp-only") {
+      return res.status(403).json({ message: "权限不足" });
+    }
+    try {
+      const users = await storage.getUsers();
+      // 不返回密码
+      const safeUsers = users.map(u => ({ id: u.id, username: u.username, role: u.role, createdAt: u.createdAt }));
+      res.json(safeUsers);
+    } catch (e: any) {
+      res.status(500).json({ message: "获取用户列表失败: " + String(e?.message || e) });
+    }
+  });
+
+  app.patch("/api/users/:id/role", async (req, res) => {
+    if ((req.session as any).role === "otp-only") {
+      return res.status(403).json({ message: "权限不足" });
+    }
+    const userId = parseInt(req.params.id);
+    const { role } = req.body;
+    if (!["normal", "otp-only"].includes(role)) {
+      return res.status(400).json({ message: "无效的角色" });
+    }
+    try {
+      await storage.updateUserRole(userId, role);
+      res.json({ message: "角色已更新" });
+    } catch (e: any) {
+      res.status(500).json({ message: "更新失败: " + String(e?.message || e) });
+    }
+  });
 
   // === Seed ===
   async function seedDatabase() {

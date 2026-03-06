@@ -7,6 +7,7 @@ export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   username: varchar("username", { length: 50 }).notNull().unique(),
   password: text("password").notNull(),
+  role: varchar("role", { length: 20 }).default("normal").notNull(), // "normal" | "otp-only"
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -40,7 +41,9 @@ export const otpSecrets = pgTable("otp_secrets", {
   secret: text("secret").notNull(),
 });
 
-export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true });
+export const insertUserSchema = createInsertSchema(users).omit({ id: true, createdAt: true }).extend({
+  role: z.enum(["normal", "otp-only"]).default("normal"),
+});
 export const loginSchema = z.object({
   username: z.string().min(1, "Username is required"),
   password: z.string().min(6, "Password must be at least 6 characters"),

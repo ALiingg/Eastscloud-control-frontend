@@ -41,13 +41,14 @@ export default function Overview() {
   const { data: services } = useServices();
   const { data: documents } = useDocuments();
   const { data: otpSecrets } = useOtpSecrets();
-  const { data: usage } = useQuery<{
+  const { data: usage, isLoading: usageLoading, isFetching: usageFetching } = useQuery<{
     contextUsedK: number | null;
     contextTotalK: number | null;
     contextPercent: number | null;
     cachePercent: number | null;
     weekLeftPercent: number | null;
     weekUsageTokens: number | null;
+    totalUsageTokens: number | null;
     raw: string;
   }>({
     queryKey: ["/api/openclaw/usage"],
@@ -95,20 +96,22 @@ export default function Overview() {
         <div className="mt-4 rounded-xl border border-border/40 p-4">
           <div className="text-xs text-muted-foreground">Context</div>
           <div className="text-2xl font-bold mt-1">
-            {usage?.contextUsedK ?? "-"}k / {usage?.contextTotalK ?? "-"}k
+            {usageLoading ? "加载中..." : `${usage?.contextUsedK ?? "-"}k / ${usage?.contextTotalK ?? "-"}k`}
           </div>
         </div>
         <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
           <CircleProgress label="Context usage" value={usage?.contextPercent ?? null} color="#3b82f6" />
           <CircleProgress label="Cache hit" value={usage?.cachePercent ?? null} color="#10b981" />
           <CircleProgress
-            label="Week usage"
-            value={usage?.weekUsageTokens != null ? Math.min(100, Math.round((usage.weekUsageTokens / 100000000) * 100)) : null}
+            label="Week left"
+            value={usage?.weekLeftPercent ?? null}
             color="#f59e0b"
           />
         </div>
-        <div className="mt-2 text-xs text-muted-foreground">
-          Week usage tokens: {usage?.weekUsageTokens?.toLocaleString?.() ?? "-"}
+        <div className="mt-2 text-xs text-muted-foreground">Total usage tokens: {usage?.totalUsageTokens?.toLocaleString?.() ?? "-"}</div>
+        <div className="mt-1 text-xs text-muted-foreground flex items-center gap-2">
+          <span>Week usage tokens: {usage?.weekUsageTokens?.toLocaleString?.() ?? "-"}</span>
+          {(usageLoading || usageFetching) && <span className="animate-pulse">加载中...</span>}
         </div>
       </section>
 

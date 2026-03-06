@@ -12,6 +12,7 @@ import Services from "./pages/services";
 import Documents from "./pages/documents";
 import Servers from "./pages/servers";
 import OtpCodes from "./pages/otp-codes";
+import Users from "./pages/users";
 import LoginPage from "./pages/login";
 import NotFound from "./pages/not-found";
 
@@ -37,6 +38,7 @@ function Dashboard() {
               <Route path="/documents" component={Documents} />
               <Route path="/servers" component={Servers} />
               <Route path="/otp-codes" component={OtpCodes} />
+              <Route path="/users" component={Users} />
               <Route component={NotFound} />
             </Switch>
           </main>

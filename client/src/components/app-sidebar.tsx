@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Server, FileText, KeyRound, Box, LogOut, Monitor } from "lucide-react";
+import { LayoutDashboard, Server, FileText, KeyRound, Box, LogOut, Monitor, Users } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -15,17 +15,26 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 
-const navItems = [
+const navItemsNormal = [
   { title: "Overview", url: "/", icon: LayoutDashboard },
   { title: "Services", url: "/services", icon: Server },
   { title: "Documents", url: "/documents", icon: FileText },
   { title: "Servers", url: "/servers", icon: Monitor },
+  { title: "OTP Authenticator", url: "/otp-codes", icon: KeyRound },
+  { title: "Users", url: "/users", icon: Users },
+];
+
+const navItemsOtpOnly = [
   { title: "OTP Authenticator", url: "/otp-codes", icon: KeyRound },
 ];
 
 export function AppSidebar() {
   const [location] = useLocation();
   const { user, logout } = useAuth();
+
+  const userRole = (user as any)?.role || "normal";
+  const isOtpOnly = userRole === "otp-only";
+  const navItems = isOtpOnly ? navItemsOtpOnly : navItemsNormal;
 
   return (
     <Sidebar className="border-r border-border/50 bg-sidebar/30 backdrop-blur-xl">
@@ -76,9 +85,14 @@ export function AppSidebar() {
       </SidebarContent>
       <SidebarFooter className="p-4 border-t border-border/50">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground truncate" data-testid="text-current-user">
-            {user?.username}
-          </span>
+          <div className="flex flex-col truncate">
+            <span className="text-xs text-muted-foreground truncate" data-testid="text-current-user">
+              {user?.username}
+            </span>
+            {isOtpOnly && (
+              <span className="text-[10px] text-amber-500">OTP Only</span>
+            )}
+          </div>
           <Button
             variant="ghost"
             size="icon"

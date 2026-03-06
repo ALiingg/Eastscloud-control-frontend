@@ -4,6 +4,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 interface AuthUser {
   id: number;
   username: string;
+  role: string;
 }
 
 interface AuthStatus {
