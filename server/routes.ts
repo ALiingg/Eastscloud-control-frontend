@@ -13,6 +13,46 @@ const execAsync = promisify(execCb);
 
 const SALT_ROUNDS = 12;
 
+function guacBaseUrl() {
+  return (process.env.GUAC_BASE_URL || "http://192.168.2.44:8088/guacamole").replace(/\/$/, "");
+}
+
+async function getGuacAuthToken() {
+  const username = process.env.GUAC_USERNAME || "guacadmin";
+  const password = process.env.GUAC_PASSWORD || "guacadmin";
+
+  const body = new URLSearchParams();
+  body.set("username", username);
+  body.set("password", password);
+
+  const r = await fetch(`${guacBaseUrl()}/api/tokens`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body,
+  });
+
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`Guacamole auth failed: ${r.status} ${detail}`);
+  }
+
+  return r.json() as Promise<{ authToken: string; dataSource?: string }>;
+}
+
+async function guacRequest(path: string, init?: RequestInit) {
+  const auth = await getGuacAuthToken();
+  const dataSource = process.env.GUAC_DATASOURCE || auth.dataSource || "postgresql";
+  const sep = path.includes("?") ? "&" : "?";
+  const url = `${guacBaseUrl()}${path}${sep}token=${encodeURIComponent(auth.authToken)}`;
+
+  const r = await fetch(url, init);
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`Guacamole request failed: ${r.status} ${detail}`);
+  }
+  return r.json();
+}
+
 export async function registerRoutes(
   httpServer: Server,
   app: Express
@@ -127,29 +167,33 @@ export async function registerRoutes(
 
   app.get("/api/openclaw/usage", async (_req, res) => {
     try {
-      const { stdout } = await execAsync("openclaw status");
-      const cleaned = stdout.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
+      const { stdout: statusJsonRaw } = await execAsync("openclaw gateway call status --json");
+      const statusObj = JSON.parse(statusJsonRaw);
+      const recent = statusObj?.sessions?.recent || [];
+      const current = recent.find((s: any) => String(s.key || "").includes("agent:main:dingtalk:direct"))
+        || recent.find((s: any) => String(s.key || "").includes("agent:main:main"))
+        || recent[0]
+        || null;
 
-      // Prefer direct-chat session line; fallback to first token usage line.
-      const lines = cleaned.split("\n").map((l) => l.trim()).filter(Boolean);
-      const preferred = lines.find((l) => l.includes("agent:main:dingtalk:direct"))
-        || lines.find((l) => l.includes("agent:main:main"))
-        || lines.find((l) => /\d+k\/\d+k\s*\(\d+%\)/i.test(l))
-        || "";
-
-      const usageMatch = preferred.match(/(\d+)k\/(\d+)k\s*\((\d+)%\)/i)
-        || cleaned.match(/(\d+)k\/(\d+)k\s*\((\d+)%\)/i);
-      const cacheMatch = preferred.match(/(\d+)%\s*cached/i)
-        || cleaned.match(/(\d+)%\s*cached/i);
-      const weekLeftMatch = cleaned.match(/Week\s+(\d+)%\s+left/i);
+      let weekUsageTokens = null;
+      try {
+        const { stdout: costRaw } = await execAsync("openclaw gateway usage-cost --json");
+        const costObj = JSON.parse(costRaw);
+        const daily = Array.isArray(costObj?.daily) ? costObj.daily : [];
+        const last7 = daily.slice(-7);
+        weekUsageTokens = last7.reduce((sum: number, d: any) => sum + Number(d?.totalTokens || 0), 0);
+      } catch {
+        weekUsageTokens = null;
+      }
 
       res.json({
-        contextUsedK: usageMatch ? Number(usageMatch[1]) : null,
-        contextTotalK: usageMatch ? Number(usageMatch[2]) : null,
-        contextPercent: usageMatch ? Number(usageMatch[3]) : null,
-        cachePercent: cacheMatch ? Number(cacheMatch[1]) : null,
-        weekLeftPercent: weekLeftMatch ? Number(weekLeftMatch[1]) : null,
-        raw: preferred,
+        contextUsedK: current?.totalTokens ? Math.round(Number(current.totalTokens) / 1000) : null,
+        contextTotalK: current?.contextTokens ? Math.round(Number(current.contextTokens) / 1000) : null,
+        contextPercent: typeof current?.percentUsed === "number" ? Number(current.percentUsed) : null,
+        cachePercent: current?.totalTokens ? Math.max(0, Math.min(100, Math.round((Number(current.cacheRead || 0) / Number(current.totalTokens)) * 100))) : null,
+        weekLeftPercent: null,
+        weekUsageTokens,
+        raw: current?.key || "",
       });
     } catch (e: any) {
       res.status(500).json({ message: "Failed to read OpenClaw usage", detail: String(e?.message || e) });
@@ -180,6 +224,7 @@ export async function registerRoutes(
   app.use("/api/otp-secrets", requireAuth);
   app.use("/api/openclaw", requireAuth);
   app.use("/api/server-status", requireAuth);
+  app.use("/api/guac", requireAuth);
 
   // === Seed ===
   async function seedDatabase() {
@@ -227,6 +272,80 @@ export async function registerRoutes(
     }
   }
   seedDatabase();
+
+  // Guacamole API proxy (for web-based SSH/RDP management)
+  app.get("/api/guac/status", async (_req, res) => {
+    try {
+      const auth = await getGuacAuthToken();
+      res.json({ ok: true, dataSource: process.env.GUAC_DATASOURCE || auth.dataSource || "postgresql", baseUrl: guacBaseUrl() });
+    } catch (e: any) {
+      res.status(500).json({ ok: false, message: String(e?.message || e) });
+    }
+  });
+
+  app.get("/api/guac/connections", async (_req, res) => {
+    try {
+      const auth = await getGuacAuthToken();
+      const ds = process.env.GUAC_DATASOURCE || auth.dataSource || "postgresql";
+      const data = await guacRequest(`/api/session/data/${ds}/connections`);
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ message: "Failed to list Guacamole connections", detail: String(e?.message || e) });
+    }
+  });
+
+  app.post("/api/guac/connections", async (req, res) => {
+    try {
+      const auth = await getGuacAuthToken();
+      const ds = process.env.GUAC_DATASOURCE || auth.dataSource || "postgresql";
+
+      const {
+        name,
+        protocol,
+        hostname,
+        port,
+        username,
+        password,
+        ignoreCert,
+      } = req.body || {};
+
+      if (!name || !protocol || !hostname || !port) {
+        return res.status(400).json({ message: "name, protocol, hostname, port are required" });
+      }
+
+      const payload: any = {
+        parentIdentifier: "ROOT",
+        name,
+        protocol,
+        parameters: {
+          hostname: String(hostname),
+          port: String(port),
+          username: username ? String(username) : "",
+          password: password ? String(password) : "",
+          security: protocol === "rdp" ? "any" : "",
+          "ignore-cert": protocol === "rdp" ? (ignoreCert === false ? "" : "true") : "",
+        },
+        attributes: {
+          "max-connections": "",
+          "max-connections-per-user": "",
+          weight: "",
+          "failover-only": "",
+          "guacd-port": "4822",
+          "guacd-encryption": "",
+        },
+      };
+
+      const created = await guacRequest(`/api/session/data/${ds}/connections`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      res.status(201).json(created);
+    } catch (e: any) {
+      res.status(500).json({ message: "Failed to create Guacamole connection", detail: String(e?.message || e) });
+    }
+  });
 
   // Services
   app.get(api.services.list.path, async (req, res) => {

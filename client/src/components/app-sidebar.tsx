@@ -1,5 +1,5 @@
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Server, FileText, KeyRound, Box, LogOut } from "lucide-react";
+import { LayoutDashboard, Server, FileText, KeyRound, Box, LogOut, Monitor } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -19,6 +19,7 @@ const navItems = [
   { title: "Overview", url: "/", icon: LayoutDashboard },
   { title: "Services", url: "/services", icon: Server },
   { title: "Documents", url: "/documents", icon: FileText },
+  { title: "Servers", url: "/servers", icon: Monitor },
   { title: "OTP Authenticator", url: "/otp-codes", icon: KeyRound },
 ];
 

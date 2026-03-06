@@ -6,6 +6,37 @@ import { Link } from "wouter";
 import { format } from "date-fns";
 import { useQuery } from "@tanstack/react-query";
 
+function CircleProgress({ label, value, color, suffix = "%" }: { label: string; value: number | null; color: string; suffix?: string }) {
+  const safe = Math.max(0, Math.min(100, value ?? 0));
+  const radius = 34;
+  const c = 2 * Math.PI * radius;
+  const offset = c - (safe / 100) * c;
+  return (
+    <div className="rounded-xl border border-border/40 p-4 flex items-center gap-4">
+      <svg width="88" height="88" viewBox="0 0 88 88" className="shrink-0">
+        <circle cx="44" cy="44" r={radius} stroke="currentColor" className="text-muted/30" strokeWidth="8" fill="none" />
+        <circle
+          cx="44"
+          cy="44"
+          r={radius}
+          stroke={color}
+          strokeWidth="8"
+          fill="none"
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={offset}
+          transform="rotate(-90 44 44)"
+          style={{ transition: "stroke-dashoffset 0.6s ease" }}
+        />
+      </svg>
+      <div>
+        <div className="text-xs text-muted-foreground">{label}</div>
+        <div className="text-2xl font-bold mt-1">{value == null ? "-" : `${value}${suffix}`}</div>
+      </div>
+    </div>
+  );
+}
+
 export default function Overview() {
   const { data: services } = useServices();
   const { data: documents } = useDocuments();
@@ -16,6 +47,7 @@ export default function Overview() {
     contextPercent: number | null;
     cachePercent: number | null;
     weekLeftPercent: number | null;
+    weekUsageTokens: number | null;
     raw: string;
   }>({
     queryKey: ["/api/openclaw/usage"],
@@ -60,25 +92,23 @@ export default function Overview() {
           <h2 className="text-xl font-bold">OpenClaw Usage</h2>
           <span className="text-xs text-muted-foreground">auto refresh: 30s</span>
         </div>
-        <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="rounded-xl border border-border/40 p-4">
-            <div className="text-xs text-muted-foreground">Context</div>
-            <div className="text-2xl font-bold mt-1">
-              {usage?.contextUsedK ?? "-"}k / {usage?.contextTotalK ?? "-"}k
-            </div>
+        <div className="mt-4 rounded-xl border border-border/40 p-4">
+          <div className="text-xs text-muted-foreground">Context</div>
+          <div className="text-2xl font-bold mt-1">
+            {usage?.contextUsedK ?? "-"}k / {usage?.contextTotalK ?? "-"}k
           </div>
-          <div className="rounded-xl border border-border/40 p-4">
-            <div className="text-xs text-muted-foreground">Usage %</div>
-            <div className="text-2xl font-bold mt-1">{usage?.contextPercent ?? "-"}%</div>
-          </div>
-          <div className="rounded-xl border border-border/40 p-4">
-            <div className="text-xs text-muted-foreground">Cache hit</div>
-            <div className="text-2xl font-bold mt-1">{usage?.cachePercent ?? "-"}%</div>
-          </div>
-          <div className="rounded-xl border border-border/40 p-4">
-            <div className="text-xs text-muted-foreground">Week left</div>
-            <div className="text-2xl font-bold mt-1">{usage?.weekLeftPercent ?? "-"}%</div>
-          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+          <CircleProgress label="Context usage" value={usage?.contextPercent ?? null} color="#3b82f6" />
+          <CircleProgress label="Cache hit" value={usage?.cachePercent ?? null} color="#10b981" />
+          <CircleProgress
+            label="Week usage"
+            value={usage?.weekUsageTokens != null ? Math.min(100, Math.round((usage.weekUsageTokens / 100000000) * 100)) : null}
+            color="#f59e0b"
+          />
+        </div>
+        <div className="mt-2 text-xs text-muted-foreground">
+          Week usage tokens: {usage?.weekUsageTokens?.toLocaleString?.() ?? "-"}
         </div>
       </section>
 
